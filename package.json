@@ -1,0 +1,31 @@
+{
+  "name": "rate-my-professor-ai-assistant",
+  "version": "1.0.0",
+  "description": "An AI assistant that provides information and recommendations about professors using data from Rate My Professor, integrated with OpenAI and Pinecone.",
+  "main": "index.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@pinecone-database/pinecone": "^3.0.2",
+    "axios": "^1.4.0",
+    "cheerio": "^1.0.0",
+    "dotenv": "^16.4.5",
+    "next": "13.4.10",
+    "openai": "^3.2.1",
+    "react": "18.2.0",
+    "react-dom": "18.2.0"
+  },
+  "devDependencies": {
+    "eslint": "8.46.0",
+    "eslint-config-next": "13.4.10"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "author": "",
+  "license": "MIT"
+}
