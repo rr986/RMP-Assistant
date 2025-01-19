@@ -7,26 +7,36 @@ export default function Home() {
   const [response, setResponse] = useState("");
   const [followUp, setFollowUp] = useState("");
   const [followUpResponse, setFollowUpResponse] = useState("");
+  const [loading, setLoading] = useState(false); // New loading state
+  const [followUpLoading, setFollowUpLoading] = useState(false); // New loading state for follow-ups
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setLoading(true); // Set loading to true
+    setResponse(""); // Clear previous response
 
     try {
       const res = await axios.post("/api/ask", { query, url });
       setResponse(res.data.result);
     } catch (error) {
       console.error("Error fetching response:", error);
+    } finally {
+      setLoading(false); // Set loading to false
     }
   };
 
   const handleFollowUpSubmit = async (e) => {
     e.preventDefault();
+    setFollowUpLoading(true); // Set loading for follow-up
+    setFollowUpResponse(""); // Clear previous follow-up response
 
     try {
       const res = await axios.post("/api/followup", { query: followUp });
       setFollowUpResponse(res.data.result);
     } catch (error) {
       console.error("Error fetching follow-up response:", error);
+    } finally {
+      setFollowUpLoading(false); // Set follow-up loading to false
     }
   };
 
@@ -50,7 +60,9 @@ export default function Home() {
           <li>Optionally, provide a RateMyProfessor profile URL for enhanced insights.</li>
           <li>Submit your query and view the AI-generated response.</li>
           <li>Continue the conversation by asking follow-up questions.</li>
-          (Note: Responses may take up to 10-15 seconds to generate.)
+          <small className="text-gray-500 italic">
+          Note: Responses may take up to 10-15 seconds to generate.
+          </small>
         </ol>
       </section>
 
@@ -99,9 +111,16 @@ export default function Home() {
         </button>
       </form>
 
+      {/* Loading Message */}
+      {loading && (
+        <div className="text-blue-500 font-medium mt-4">
+          Generating AI response, please wait...
+        </div>
+      )}
+
       {/* Response Section */}
       {response && (
-        <div className="bg-gray-100 p-4 mt-6 rounded-lg shadow-md w-full max-w-2xl">
+        <div className="bg-gray-100 p-4 mt-6 mb-6 rounded-lg shadow-md w-full max-w-2xl">
           <h2 className="text-xl font-bold mb-2">AI Response:</h2>
           <p className="text-gray-700 whitespace-pre-wrap overflow-auto max-h-96">
             {response}
@@ -133,6 +152,13 @@ export default function Home() {
               Submit Follow-Up
             </button>
           </form>
+        </div>
+      )}
+
+      {/* Follow-Up Loading Message */}
+      {followUpLoading && (
+        <div className="text-green-500 font-medium mt-4">
+          Processing follow-up question, please wait...
         </div>
       )}
 
