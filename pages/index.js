@@ -7,38 +7,48 @@ export default function Home() {
   const [response, setResponse] = useState("");
   const [followUp, setFollowUp] = useState("");
   const [followUpResponse, setFollowUpResponse] = useState("");
-  const [loading, setLoading] = useState(false); // New loading state
-  const [followUpLoading, setFollowUpLoading] = useState(false); // New loading state for follow-ups
+  const [loading, setLoading] = useState(false);
+  const [followUpLoading, setFollowUpLoading] = useState(false);
+  const [professorData, setProfessorData] = useState(null);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setLoading(true); // Set loading to true
-    setResponse(""); // Clear previous response
+    const handleSubmit = async (e) => {
+      e.preventDefault();
+      setLoading(true);
+      setResponse("");
 
-    try {
-      const res = await axios.post("/api/ask", { query, url });
-      setResponse(res.data.result);
-    } catch (error) {
-      console.error("Error fetching response:", error);
-    } finally {
-      setLoading(false); // Set loading to false
-    }
-  };
+      try {
+        const res = await axios.post("/api/ask", { query, url });
+        setResponse(res.data.result);
+        setProfessorData(res.data.professorData);
+      } catch (error) {
+        console.error("Error fetching response:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
 
-  const handleFollowUpSubmit = async (e) => {
-    e.preventDefault();
-    setFollowUpLoading(true); // Set loading for follow-up
-    setFollowUpResponse(""); // Clear previous follow-up response
+    const handleFollowUpSubmit = async (e) => {
+      e.preventDefault();
+      setFollowUpLoading(true);
+      setFollowUpResponse("");
 
-    try {
-      const res = await axios.post("/api/followup", { query: followUp });
-      setFollowUpResponse(res.data.result);
-    } catch (error) {
-      console.error("Error fetching follow-up response:", error);
-    } finally {
-      setFollowUpLoading(false); // Set follow-up loading to false
-    }
-  };
+      try {
+        if (!professorData) {
+          console.error("Professor data is missing for follow-up.");
+          return;
+        }
+
+        const res = await axios.post("/api/followup", {
+          query: followUp,
+          professorData,
+        });
+        setFollowUpResponse(res.data.result);
+      } catch (error) {
+        console.error("Error fetching follow-up response:", error);
+      } finally {
+        setFollowUpLoading(false);
+      }
+    };
 
   return (
     <div className="min-h-screen bg-gray-100 text-gray-800 flex flex-col items-center justify-center font-sans">
@@ -57,11 +67,11 @@ export default function Home() {
         <h2 className="text-lg font-bold text-gray-800 mb-2">How to Use:</h2>
         <ol className="list-decimal list-inside text-gray-700">
           <li>Enter a professor's name to ask specific questions.</li>
-          <li>Optionally, provide a RateMyProfessor profile URL for enhanced insights.</li>
+          <li>Optionally, provide a RateMyProfessor profile URL for specific insights.</li>
           <li>Submit your query and view the AI-generated response.</li>
           <li>Continue the conversation by asking follow-up questions.</li>
           <small className="text-gray-500 italic">
-          Note: Responses may take up to 10-15 seconds to generate.
+            Note: Responses may take up to 10-15 seconds to generate.
           </small>
         </ol>
       </section>

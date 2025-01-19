@@ -22,6 +22,7 @@ export default async function handler(req, res) {
 
   try {
     let queryVector = [];
+    let professorData = null;
 
     if (query) {
       const embeddingResponse = await openai.createEmbedding({
@@ -32,7 +33,7 @@ export default async function handler(req, res) {
       if (embeddingResponse?.data?.data?.length > 0) {
         queryVector = embeddingResponse.data.data[0].embedding;
       } else {
-        return res.status(400).json({ error: 'Failed to generate embedding for query' });
+        return res.status(400).json({ error: "Failed to generate embedding for query" });
       }
     }
 
@@ -57,6 +58,13 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: "Failed to extract valid data from the URL" });
       }
 
+      professorData = {
+        name: professorName,
+        rating,
+        reviews,
+        url,
+      };
+
       const professorNameEmbedding = await openai.createEmbedding({
         model: "text-embedding-ada-002",
         input: professorName,
@@ -67,13 +75,13 @@ export default async function handler(req, res) {
 
         await index.upsert([
           {
-            id: professorName.toLowerCase().replace(/\s+/g, '-'),
+            id: professorName.toLowerCase().replace(/\s+/g, "-"),
             values: professorVector,
-            metadata: { name: professorName, url, rating, reviews },
-          }
+            metadata: professorData,
+          },
         ]);
       } else {
-        return res.status(400).json({ error: 'Failed to generate embedding for professor name' });
+        return res.status(400).json({ error: "Failed to generate embedding for professor name" });
       }
     }
 
@@ -84,29 +92,34 @@ export default async function handler(req, res) {
         includeMetadata: true,
       });
 
-      const professorData = queryResponse.matches
-        .map(match => match.metadata)
-        .filter(professor => professor.name.toLowerCase() === query.toLowerCase());
+      const matchedProfessor = queryResponse.matches
+        .map((match) => match.metadata)
+        .filter((prof) => prof.name.toLowerCase() === query.toLowerCase());
 
-      if (professorData.length === 0) {
+      if (matchedProfessor.length === 0) {
         return res.status(404).json({ error: "Professor not found." });
       }
 
-      const prompt = `The user is looking for information about the professor. Here is the data we found: ${JSON.stringify(professorData)}. Provide a summary and include the professor's Rate My Professors page URL directly in the response instead of saying "this link."`;
-
-      const response = await openai.createChatCompletion({
-        model: "gpt-3.5-turbo",
-        messages: [
-          { role: "system", content: "You are a helpful assistant." },
-          { role: "user", content: prompt }
-        ],
-        max_tokens: 150,
-      });
-
-      const summary = response.data.choices[0].message.content.trim();
-      res.status(200).json({ result: summary });
+      professorData = matchedProfessor[0];
     }
 
+    const prompt = `
+      The user is looking for information about the professor. Here is the data we found: ${JSON.stringify(professorData)}.
+      Provide a summary and include the professor's Rate My Professors page URL directly in the response instead of saying "this link."
+    `;
+
+    const response = await openai.createChatCompletion({
+      model: "gpt-3.5-turbo",
+      messages: [
+        { role: "system", content: "You are a helpful assistant." },
+        { role: "user", content: prompt },
+      ],
+      max_tokens: 150,
+    });
+
+    const summary = response.data.choices[0].message.content.trim();
+
+    res.status(200).json({ result: summary, professorData }); // Include professorData in the response
   } catch (error) {
     console.error("Error in server-side logic:", error);
     res.status(500).json({ error: "Failed to process request" });
