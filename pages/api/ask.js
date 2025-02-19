@@ -3,6 +3,7 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { Pinecone } from '@pinecone-database/pinecone';
 
+// Set up OpenAI and Pinecone using environment variables
 const configuration = new Configuration({
   apiKey: process.env.OPENAI_API_KEY,
 });
@@ -16,7 +17,7 @@ const index = pc.index('rmpindex');
 export default async function handler(req, res) {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*'); // Adjust for your security policy if needed
+    res.setHeader('Access-Control-Allow-Origin', '*'); // Adjust as needed for security
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     return res.status(200).end();
