@@ -14,6 +14,20 @@ const pc = new Pinecone({
 const index = pc.index('rmpindex');
 
 export default async function handler(req, res) {
+  // Handle CORS preflight requests
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Origin', '*'); // Adjust for your security policy if needed
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    return res.status(200).end();
+  }
+
+  // Only allow POST requests
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', ['POST', 'OPTIONS']);
+    return res.status(405).end(`Method ${req.method} Not Allowed`);
+  }
+
   const { query, url } = req.body;
 
   if (!query && !url) {
@@ -108,7 +122,7 @@ export default async function handler(req, res) {
       Provide a summary and include the professor's Rate My Professors page URL directly in the response instead of saying "this link."
     `;
 
-    const response = await openai.createChatCompletion({
+    const responseChat = await openai.createChatCompletion({
       model: "gpt-3.5-turbo",
       messages: [
         { role: "system", content: "You are a helpful assistant." },
@@ -117,12 +131,13 @@ export default async function handler(req, res) {
       max_tokens: 150,
     });
 
-    const summary = response.data.choices[0].message.content.trim();
+    const summary = responseChat.data.choices[0].message.content.trim();
 
-    res.status(200).json({ result: summary, professorData }); // Include professorData in the response
+    res.status(200).json({ result: summary, professorData });
   } catch (error) {
     console.error("Error in server-side logic:", error);
     res.status(500).json({ error: "Failed to process request" });
   }
 }
+
 
