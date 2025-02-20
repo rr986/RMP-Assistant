@@ -1,7 +1,7 @@
+import * as cheerio from "cheerio";
+import axios from "axios";
+import { Pinecone } from "@pinecone-database/pinecone";
 import { Configuration, OpenAIApi } from "openai";
-import axios from 'axios';
-import * as cheerio from 'cheerio';
-import { Pinecone } from '@pinecone-database/pinecone';
 
 const configuration = new Configuration({
   apiKey: process.env.OPENAI_API_KEY,
@@ -11,9 +11,21 @@ const openai = new OpenAIApi(configuration);
 const pc = new Pinecone({
   apiKey: process.env.PINECONE_API_KEY,
 });
-const index = pc.index('rmpindex');
+const index = pc.index("rmpindex");
 
 export default async function handler(req, res) {
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    return res.status(200).end();
+  }
+
+  if (req.method !== "POST") {
+    res.setHeader("Allow", ["POST", "OPTIONS"]);
+    return res.status(405).end(`Method ${req.method} Not Allowed`);
+  }
+
   const { query, url } = req.body;
 
   if (!query && !url) {
@@ -41,73 +53,30 @@ export default async function handler(req, res) {
 
     if (url) {
       console.log("DEBUG: Fetching professor data from:", url);
-      let reviews = [];
+      const { data } = await axios.get(url);
+      const $ = cheerio.load(data);
 
-      const extractReviewsFromPage = async (pageUrl) => {
-        try {
-          const { data } = await axios.get(pageUrl);
-          const $ = cheerio.load(data);
+      // Extract professor's first and last name
+      const firstName = $("h1.NameTitle__NameWrapper-dowf0z-2").contents().first().text().trim();
+      const lastName = $("h1.NameTitle__NameWrapper-dowf0z-2").contents().last().text().trim();
+      const professorName = `${firstName} ${lastName}`.trim();
+      console.log("DEBUG: Extracted Professor Name:", professorName);
 
-          console.log(`DEBUG: Parsing RMP page: ${pageUrl}`);
+      // Extract professor's overall rating
+      const rating = parseFloat($(".RatingValue__Numerator-qw8sqy-2").text().trim());
+      console.log("DEBUG: Rating extracted:", rating);
 
-          const firstName = $('div.TeacherInfo__StyledTeacher-xf6b3k-1 span:first-child').text().trim();
-          const lastName = $('div.TeacherInfo__StyledTeacher-xf6b3k-1 span:last-child').text().trim();
-          const professorName = `${firstName} ${lastName}`;
-          const ratingText = $('.RatingValue__Numerator-qw8sqy-2').text().trim();
-          const rating = parseFloat(ratingText);
-
-          console.log("DEBUG: Extracted Professor Name:", professorName || "(MISSING)");
-          console.log("DEBUG: Rating extracted:", ratingText || "(MISSING)");
-
-          $('.Comments__StyledComments-dzzyvm-0').each((index, element) => {
-            const reviewText = $(element).text().trim();
-            if (reviewText) {
-              reviews.push(reviewText);
-            }
-          });
-
-          console.log(`DEBUG: Extracted ${reviews.length} reviews so far.`);
-
-          // Fix: Extracting pagination correctly
-          let nextPageUrl = null;
-          $('nav.Pagination__StyledPagination-rmp-nav a').each((_, link) => {
-            const href = $(link).attr('href');
-            if (href.includes('page=')) {
-              nextPageUrl = `https://www.ratemyprofessors.com${href}`;
-            }
-          });
-
-          console.log("DEBUG: Next Page URL detected:", nextPageUrl || "No more pages");
-
-          return { professorName, rating, reviews, nextPageUrl };
-        } catch (error) {
-          console.error(`ERROR: Failed to parse page: ${pageUrl}`, error);
-          return null;
+      // Extract reviews
+      const reviews = [];
+      $("div.Comments__StyledComments-dzzyvm-0").each((index, element) => {
+        const reviewText = $(element).text().trim();
+        if (reviewText) {
+          reviews.push(reviewText);
         }
-      };
+      });
+      console.log(`DEBUG: Extracted ${reviews.length} reviews.`);
 
-      let currentPage = url;
-      let professorName = "";
-      let rating = 0;
-      let firstPage = true;
-
-      while (currentPage) {
-        console.log(`DEBUG: Processing page: ${currentPage}`);
-        const result = await extractReviewsFromPage(currentPage);
-
-        if (!result) break;
-        if (firstPage) {
-          professorName = result.professorName;
-          rating = result.rating;
-          firstPage = false;
-        }
-
-        currentPage = result.nextPageUrl;
-      }
-
-      console.log(`DEBUG: Total reviews extracted: ${reviews.length}`);
-
-      if (!professorName.trim() || isNaN(rating) || reviews.length === 0) {
+      if (!professorName || isNaN(rating) || reviews.length === 0) {
         return res.status(400).json({ error: "Failed to extract valid data from the URL" });
       }
 
@@ -167,7 +136,7 @@ export default async function handler(req, res) {
     `;
 
     console.log("DEBUG: Sending prompt to OpenAI...");
-    const response = await openai.createChatCompletion({
+    const responseChat = await openai.createChatCompletion({
       model: "gpt-3.5-turbo",
       messages: [
         { role: "system", content: "You are a helpful assistant." },
@@ -176,12 +145,13 @@ export default async function handler(req, res) {
       max_tokens: 150,
     });
 
-    const summary = response.data.choices[0].message.content.trim();
+    const summary = responseChat.data.choices[0].message.content.trim();
     console.log("DEBUG: OpenAI Response:", summary);
 
     res.status(200).json({ result: summary, professorData });
   } catch (error) {
-    console.error("ERROR: Exception in handler:", error);
+    console.error("Error in server-side logic:", error);
     res.status(500).json({ error: "Failed to process request" });
   }
 }
+
