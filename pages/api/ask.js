@@ -42,31 +42,23 @@ export default async function handler(req, res) {
     if (url) {
       console.log("DEBUG: Fetching professor data from:", url);
       let reviews = [];
-      let currentPage = url;
-      let professorName = "";
-      let rating = 0;
-      let firstPage = true;
 
       const extractReviewsFromPage = async (pageUrl) => {
         try {
           const { data } = await axios.get(pageUrl);
           const $ = cheerio.load(data);
 
-          console.log(DEBUG: Parsing RMP page: ${pageUrl});
+          console.log(`DEBUG: Parsing RMP page: ${pageUrl}`);
 
-          // Extract professor name (only on first page)
-          if (firstPage) {
-            const firstName = $('div.TeacherInfo__StyledTeacher-xf6b3k-1 span:first-child').text().trim();
-            const lastName = $('div.TeacherInfo__StyledTeacher-xf6b3k-1 span:last-child').text().trim();
-            professorName = ${firstName} ${lastName};
-            const ratingText = $('.RatingValue__Numerator-qw8sqy-2').text().trim();
-            rating = parseFloat(ratingText);
-            console.log("DEBUG: Extracted Professor Name:", professorName || "(MISSING)");
-            console.log("DEBUG: Rating extracted:", ratingText || "(MISSING)");
-            firstPage = false;
-          }
+          const firstName = $('div.TeacherInfo__StyledTeacher-xf6b3k-1 span:first-child').text().trim();
+          const lastName = $('div.TeacherInfo__StyledTeacher-xf6b3k-1 span:last-child').text().trim();
+          const professorName = `${firstName} ${lastName}`;
+          const ratingText = $('.RatingValue__Numerator-qw8sqy-2').text().trim();
+          const rating = parseFloat(ratingText);
 
-          // Extract reviews
+          console.log("DEBUG: Extracted Professor Name:", professorName || "(MISSING)");
+          console.log("DEBUG: Rating extracted:", ratingText || "(MISSING)");
+
           $('.Comments__StyledComments-dzzyvm-0').each((index, element) => {
             const reviewText = $(element).text().trim();
             if (reviewText) {
@@ -74,32 +66,46 @@ export default async function handler(req, res) {
             }
           });
 
-          console.log(DEBUG: Extracted ${reviews.length} reviews so far.);
+          console.log(`DEBUG: Extracted ${reviews.length} reviews so far.`);
 
-          // Find next page button
+          // Fix: Extracting pagination correctly
           let nextPageUrl = null;
-          $('a.PaginationButton__StyledPaginationButton-3y_4b-1').each((_, link) => {
+          $('nav.Pagination__StyledPagination-rmp-nav a').each((_, link) => {
             const href = $(link).attr('href');
-            if (href && href.includes('page=')) {
-              nextPageUrl = https://www.ratemyprofessors.com${href};
+            if (href.includes('page=')) {
+              nextPageUrl = `https://www.ratemyprofessors.com${href}`;
             }
           });
 
           console.log("DEBUG: Next Page URL detected:", nextPageUrl || "No more pages");
 
-          return nextPageUrl;
+          return { professorName, rating, reviews, nextPageUrl };
         } catch (error) {
-          console.error(ERROR: Failed to parse page: ${pageUrl}, error);
+          console.error(`ERROR: Failed to parse page: ${pageUrl}`, error);
           return null;
         }
       };
 
+      let currentPage = url;
+      let professorName = "";
+      let rating = 0;
+      let firstPage = true;
+
       while (currentPage) {
-        console.log(DEBUG: Processing page: ${currentPage});
-        currentPage = await extractReviewsFromPage(currentPage);
+        console.log(`DEBUG: Processing page: ${currentPage}`);
+        const result = await extractReviewsFromPage(currentPage);
+
+        if (!result) break;
+        if (firstPage) {
+          professorName = result.professorName;
+          rating = result.rating;
+          firstPage = false;
+        }
+
+        currentPage = result.nextPageUrl;
       }
 
-      console.log(DEBUG: Total reviews extracted: ${reviews.length});
+      console.log(`DEBUG: Total reviews extracted: ${reviews.length}`);
 
       if (!professorName.trim() || isNaN(rating) || reviews.length === 0) {
         return res.status(400).json({ error: "Failed to extract valid data from the URL" });
@@ -114,7 +120,7 @@ export default async function handler(req, res) {
 
       console.log("DEBUG: Professor Data Finalized:", professorData);
 
-      console.log(DEBUG: Generating embedding for professor: ${professorName});
+      console.log(`DEBUG: Generating embedding for professor: ${professorName}`);
       const professorNameEmbedding = await openai.createEmbedding({
         model: "text-embedding-ada-002",
         input: professorName,
@@ -130,7 +136,7 @@ export default async function handler(req, res) {
             metadata: professorData,
           },
         ]);
-        console.log(DEBUG: Successfully stored professor data in Pinecone.);
+        console.log(`DEBUG: Successfully stored professor data in Pinecone.`);
       } else {
         return res.status(400).json({ error: "Failed to generate embedding for professor name" });
       }
@@ -155,10 +161,10 @@ export default async function handler(req, res) {
       professorData = matchedProfessor[0];
     }
 
-    const prompt = 
+    const prompt = `
       The user is looking for information about the professor. Here is the data we found: ${JSON.stringify(professorData)}.
       Provide a summary and include the professor's Rate My Professors page URL directly in the response instead of saying "this link."
-    ;
+    `;
 
     console.log("DEBUG: Sending prompt to OpenAI...");
     const response = await openai.createChatCompletion({
@@ -179,4 +185,3 @@ export default async function handler(req, res) {
     res.status(500).json({ error: "Failed to process request" });
   }
 }
-
