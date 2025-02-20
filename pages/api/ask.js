@@ -3,7 +3,6 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { Pinecone } from '@pinecone-database/pinecone';
 
-// Set up OpenAI and Pinecone using environment variables
 const configuration = new Configuration({
   apiKey: process.env.OPENAI_API_KEY,
 });
@@ -15,20 +14,6 @@ const pc = new Pinecone({
 const index = pc.index('rmpindex');
 
 export default async function handler(req, res) {
-  // Handle CORS preflight requests
-  if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*'); // Adjust as needed for security
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    return res.status(200).end();
-  }
-
-  // Only allow POST requests
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', ['POST', 'OPTIONS']);
-    return res.status(405).end(`Method ${req.method} Not Allowed`);
-  }
-
   const { query, url } = req.body;
 
   if (!query && !url) {
@@ -40,6 +25,7 @@ export default async function handler(req, res) {
     let professorData = null;
 
     if (query) {
+      console.log("DEBUG: Generating embedding for query:", query);
       const embeddingResponse = await openai.createEmbedding({
         model: "text-embedding-ada-002",
         input: query,
@@ -47,29 +33,75 @@ export default async function handler(req, res) {
 
       if (embeddingResponse?.data?.data?.length > 0) {
         queryVector = embeddingResponse.data.data[0].embedding;
+        console.log("DEBUG: Query embedding generated successfully.");
       } else {
         return res.status(400).json({ error: "Failed to generate embedding for query" });
       }
     }
 
     if (url) {
-      const { data } = await axios.get(url);
-      const $ = cheerio.load(data);
+      console.log("DEBUG: Fetching professor data from:", url);
+      let reviews = [];
+      let currentPage = url;
+      let professorName = "";
+      let rating = 0;
+      let firstPage = true;
 
-      const firstName = $('div.NameTitle__Name-dowf0z-0.cfjPUG span').first().text().trim();
-      const lastName = $('div.NameTitle__Name-dowf0z-0.cfjPUG span.NameTitle__LastNameWrapper-dowf0z-2.glXOHH').text().trim();
-      const professorName = `${firstName} ${lastName}`;
-      const rating = parseFloat($('.RatingValue__Numerator-qw8sqy-2').text().trim());
+      const extractReviewsFromPage = async (pageUrl) => {
+        try {
+          const { data } = await axios.get(pageUrl);
+          const $ = cheerio.load(data);
 
-      const reviews = [];
-      $('.Comments__StyledComments-dzzyvm-0').each((index, element) => {
-        const reviewText = $(element).text().trim();
-        if (reviewText) {
-          reviews.push(reviewText);
+          console.log(DEBUG: Parsing RMP page: ${pageUrl});
+
+          // Extract professor name (only on first page)
+          if (firstPage) {
+            const firstName = $('div.TeacherInfo__StyledTeacher-xf6b3k-1 span:first-child').text().trim();
+            const lastName = $('div.TeacherInfo__StyledTeacher-xf6b3k-1 span:last-child').text().trim();
+            professorName = ${firstName} ${lastName};
+            const ratingText = $('.RatingValue__Numerator-qw8sqy-2').text().trim();
+            rating = parseFloat(ratingText);
+            console.log("DEBUG: Extracted Professor Name:", professorName || "(MISSING)");
+            console.log("DEBUG: Rating extracted:", ratingText || "(MISSING)");
+            firstPage = false;
+          }
+
+          // Extract reviews
+          $('.Comments__StyledComments-dzzyvm-0').each((index, element) => {
+            const reviewText = $(element).text().trim();
+            if (reviewText) {
+              reviews.push(reviewText);
+            }
+          });
+
+          console.log(DEBUG: Extracted ${reviews.length} reviews so far.);
+
+          // Find next page button
+          let nextPageUrl = null;
+          $('a.PaginationButton__StyledPaginationButton-3y_4b-1').each((_, link) => {
+            const href = $(link).attr('href');
+            if (href && href.includes('page=')) {
+              nextPageUrl = https://www.ratemyprofessors.com${href};
+            }
+          });
+
+          console.log("DEBUG: Next Page URL detected:", nextPageUrl || "No more pages");
+
+          return nextPageUrl;
+        } catch (error) {
+          console.error(ERROR: Failed to parse page: ${pageUrl}, error);
+          return null;
         }
-      });
+      };
 
-      if (!professorName || isNaN(rating) || reviews.length === 0) {
+      while (currentPage) {
+        console.log(DEBUG: Processing page: ${currentPage});
+        currentPage = await extractReviewsFromPage(currentPage);
+      }
+
+      console.log(DEBUG: Total reviews extracted: ${reviews.length});
+
+      if (!professorName.trim() || isNaN(rating) || reviews.length === 0) {
         return res.status(400).json({ error: "Failed to extract valid data from the URL" });
       }
 
@@ -80,6 +112,9 @@ export default async function handler(req, res) {
         url,
       };
 
+      console.log("DEBUG: Professor Data Finalized:", professorData);
+
+      console.log(DEBUG: Generating embedding for professor: ${professorName});
       const professorNameEmbedding = await openai.createEmbedding({
         model: "text-embedding-ada-002",
         input: professorName,
@@ -95,12 +130,14 @@ export default async function handler(req, res) {
             metadata: professorData,
           },
         ]);
+        console.log(DEBUG: Successfully stored professor data in Pinecone.);
       } else {
         return res.status(400).json({ error: "Failed to generate embedding for professor name" });
       }
     }
 
     if (queryVector.length > 0) {
+      console.log("DEBUG: Searching Pinecone for query match...");
       const queryResponse = await index.query({
         vector: queryVector,
         topK: 5,
@@ -118,12 +155,13 @@ export default async function handler(req, res) {
       professorData = matchedProfessor[0];
     }
 
-    const prompt = `
+    const prompt = 
       The user is looking for information about the professor. Here is the data we found: ${JSON.stringify(professorData)}.
       Provide a summary and include the professor's Rate My Professors page URL directly in the response instead of saying "this link."
-    `;
+    ;
 
-    const responseChat = await openai.createChatCompletion({
+    console.log("DEBUG: Sending prompt to OpenAI...");
+    const response = await openai.createChatCompletion({
       model: "gpt-3.5-turbo",
       messages: [
         { role: "system", content: "You are a helpful assistant." },
@@ -132,13 +170,13 @@ export default async function handler(req, res) {
       max_tokens: 150,
     });
 
-    const summary = responseChat.data.choices[0].message.content.trim();
+    const summary = response.data.choices[0].message.content.trim();
+    console.log("DEBUG: OpenAI Response:", summary);
 
     res.status(200).json({ result: summary, professorData });
   } catch (error) {
-    console.error("Error in server-side logic:", error);
+    console.error("ERROR: Exception in handler:", error);
     res.status(500).json({ error: "Failed to process request" });
   }
 }
-
 
