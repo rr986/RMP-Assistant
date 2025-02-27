@@ -1,5 +1,5 @@
-import * as cheerio from "cheerio";
 import axios from "axios";
+import * as cheerio from "cheerio";
 import { Pinecone } from "@pinecone-database/pinecone";
 import { Configuration, OpenAIApi } from "openai";
 
@@ -53,20 +53,23 @@ export default async function handler(req, res) {
 
     if (url) {
       console.log("DEBUG: Fetching professor data from:", url);
+
+      // Fetch the HTML of the page
       const { data } = await axios.get(url);
       const $ = cheerio.load(data);
 
-      // Extract professor's first and last name
+      // Extract professor name (Updated Selector)
       const firstName = $("h1.NameTitle__NameWrapper-dowf0z-2").contents().first().text().trim();
       const lastName = $("h1.NameTitle__NameWrapper-dowf0z-2").contents().last().text().trim();
       const professorName = `${firstName} ${lastName}`.trim();
-      console.log("DEBUG: Extracted Professor Name:", professorName);
+      console.log("DEBUG: Extracted Professor Name:", professorName || "N/A");
 
-      // Extract professor's overall rating
-      const rating = parseFloat($(".RatingValue__Numerator-qw8sqy-2").text().trim());
-      console.log("DEBUG: Rating extracted:", rating);
+      // Extract overall rating (Updated Selector)
+      const ratingText = $(".RatingValue__Numerator-qw8sqy-2").first().text().trim();
+      const rating = ratingText ? parseFloat(ratingText) : null;
+      console.log("DEBUG: Rating extracted:", rating || "N/A");
 
-      // Extract reviews
+      // Extract reviews (Updated Selector)
       const reviews = [];
       $("div.Comments__StyledComments-dzzyvm-0").each((index, element) => {
         const reviewText = $(element).text().trim();
@@ -154,4 +157,5 @@ export default async function handler(req, res) {
     res.status(500).json({ error: "Failed to process request" });
   }
 }
+
 
