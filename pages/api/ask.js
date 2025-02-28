@@ -2,7 +2,6 @@ import axios from "axios";
 import * as cheerio from "cheerio";
 import { Pinecone } from "@pinecone-database/pinecone";
 import { Configuration, OpenAIApi } from "openai";
-import base64 from "base-64";
 
 const configuration = new Configuration({
   apiKey: process.env.OPENAI_API_KEY,
@@ -60,7 +59,7 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: "Invalid RateMyProfessors URL format" });
       }
 
-      const encodedProfessorId = base64.encode(`Teacher-${professorId}`);
+      const encodedProfessorId = Buffer.from(`Teacher-${professorId}`).toString("base64");
       console.log(`DEBUG: Extracted & Encoded Professor ID: ${encodedProfessorId}`);
 
       try {
@@ -199,5 +198,4 @@ export default async function handler(req, res) {
     res.status(500).json({ error: "Failed to process request" });
   }
 }
-
 
