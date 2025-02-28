@@ -2,6 +2,7 @@ import axios from "axios";
 import * as cheerio from "cheerio";
 import { Pinecone } from "@pinecone-database/pinecone";
 import { Configuration, OpenAIApi } from "openai";
+import base64 from "base-64";
 
 const configuration = new Configuration({
   apiKey: process.env.OPENAI_API_KEY,
@@ -27,7 +28,6 @@ export default async function handler(req, res) {
   }
 
   const { query, url } = req.body;
-
   if (!query && !url) {
     return res.status(400).json({ error: "Query or URL is required" });
   }
@@ -51,66 +51,108 @@ export default async function handler(req, res) {
       }
     }
 
+    let professorId = null;
     if (url) {
-      console.log("DEBUG: Fetching professor data from:", url);
+      const match = url.match(/professor\/(\d+)/);
+      professorId = match ? match[1] : null;
 
-      // Fetch the HTML of the page
-      const { data } = await axios.get(url);
-      const $ = cheerio.load(data);
-
-      // Extract professor name (Updated Selector)
-      const firstName = $("h1.NameTitle__NameWrapper-dowf0z-2").contents().first().text().trim();
-      const lastName = $("h1.NameTitle__NameWrapper-dowf0z-2").contents().last().text().trim();
-      const professorName = `${firstName} ${lastName}`.trim();
-      console.log("DEBUG: Extracted Professor Name:", professorName || "N/A");
-
-      // Extract overall rating (Updated Selector)
-      const ratingText = $(".RatingValue__Numerator-qw8sqy-2").first().text().trim();
-      const rating = ratingText ? parseFloat(ratingText) : null;
-      console.log("DEBUG: Rating extracted:", rating || "N/A");
-
-      // Extract reviews (Updated Selector)
-      const reviews = [];
-      $("div.Comments__StyledComments-dzzyvm-0").each((index, element) => {
-        const reviewText = $(element).text().trim();
-        if (reviewText) {
-          reviews.push(reviewText);
-        }
-      });
-      console.log(`DEBUG: Extracted ${reviews.length} reviews.`);
-
-      if (!professorName || isNaN(rating) || reviews.length === 0) {
-        return res.status(400).json({ error: "Failed to extract valid data from the URL" });
+      if (!professorId) {
+        return res.status(400).json({ error: "Invalid RateMyProfessors URL format" });
       }
 
-      professorData = {
-        name: professorName,
-        rating,
-        reviews,
-        url,
-      };
+      const encodedProfessorId = base64.encode(`Teacher-${professorId}`);
+      console.log(`DEBUG: Extracted & Encoded Professor ID: ${encodedProfessorId}`);
 
-      console.log("DEBUG: Professor Data Finalized:", professorData);
-
-      console.log(`DEBUG: Generating embedding for professor: ${professorName}`);
-      const professorNameEmbedding = await openai.createEmbedding({
-        model: "text-embedding-ada-002",
-        input: professorName,
-      });
-
-      if (professorNameEmbedding?.data?.data?.length > 0) {
-        const professorVector = professorNameEmbedding.data.data[0].embedding;
-
-        await index.upsert([
+      try {
+        const response = await axios.post(
+          "https://www.ratemyprofessors.com/graphql",
           {
-            id: professorName.toLowerCase().replace(/\s+/g, "-"),
-            values: professorVector,
-            metadata: professorData,
+            query: `
+              query GetProfessorRatings($id: ID!) {
+                node(id: $id) {
+                  ... on Teacher {
+                    firstName
+                    lastName
+                    numRatings
+                    avgRating
+                    ratings(first: 20) {
+                      edges {
+                        node {
+                          comment
+                          date
+                          difficultyRating
+                          clarityRating
+                          helpfulRating
+                          class
+                          attendanceMandatory
+                          grade
+                          wouldTakeAgain
+                          ratingTags
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `,
+            variables: { id: encodedProfessorId },
           },
-        ]);
-        console.log(`DEBUG: Successfully stored professor data in Pinecone.`);
-      } else {
-        return res.status(400).json({ error: "Failed to generate embedding for professor name" });
+          {
+            headers: {
+              "Content-Type": "application/json",
+              "Referer": `https://www.ratemyprofessors.com/professor/${professorId}`,
+              "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+              "Authorization": "Basic dGVzdDp0ZXN0", // ⬅️ Needed if authentication is required
+            },
+          }
+        );
+
+        const professorInfo = response.data?.data?.node;
+        if (!professorInfo) {
+          return res.status(404).json({ error: "Professor not found on RateMyProfessors" });
+        }
+
+        const professorName = `${professorInfo.firstName} ${professorInfo.lastName}`;
+        const rating = professorInfo.avgRating || "N/A";
+        const reviews = professorInfo.ratings.edges.map(edge => edge.node.comment) || [];
+
+        console.log("DEBUG: Professor Data Extracted:", {
+          name: professorName,
+          rating,
+          reviews,
+          url,
+        });
+
+        professorData = {
+          name: professorName,
+          rating,
+          reviews,
+          url,
+        };
+
+        console.log(`DEBUG: Generating embedding for professor: ${professorName}`);
+        const professorNameEmbedding = await openai.createEmbedding({
+          model: "text-embedding-ada-002",
+          input: professorName,
+        });
+
+        if (professorNameEmbedding?.data?.data?.length > 0) {
+          const professorVector = professorNameEmbedding.data.data[0].embedding;
+
+          await index.upsert([
+            {
+              id: professorName.toLowerCase().replace(/\s+/g, "-"),
+              values: professorVector,
+              metadata: professorData,
+            },
+          ]);
+          console.log(`DEBUG: Successfully stored professor data in Pinecone.`);
+        } else {
+          return res.status(400).json({ error: "Failed to generate embedding for professor name" });
+        }
+      } catch (error) {
+        console.error("ERROR: RateMyProfessors GraphQL API request failed", error.response?.data || error);
+        return res.status(500).json({ error: "RateMyProfessors API request failed" });
       }
     }
 
