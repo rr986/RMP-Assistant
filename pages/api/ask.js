@@ -158,7 +158,7 @@ export default async function handler(req, res) {
       .filter(prof => prof.name.toLowerCase() === query.toLowerCase());
 
     if (matchedProfessor.length === 0) {
-      return res.status(404).json({ error: "Professor not found." });
+      return res.status(200).json({ message: "Professor data stored but not queried yet.", professorData });
     }
 
     professorData = matchedProfessor[0];
