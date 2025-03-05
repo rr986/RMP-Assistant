@@ -87,15 +87,6 @@ export default async function handler(req, res) {
                       edges {
                         node {
                           comment
-                          date
-                          difficultyRating
-                          clarityRating
-                          helpfulRating
-                          class
-                          attendanceMandatory
-                          grade
-                          wouldTakeAgain
-                          ratingTags
                         }
                       }
                     }
@@ -119,42 +110,62 @@ export default async function handler(req, res) {
           console.log("DEBUG: GraphQL API failed, switching to scraping...");
           professorData = await scrapeProfessorPage(url);
         } else {
-          const professorName = `${professorInfo.firstName} ${professorInfo.lastName}`;
-          const rating = professorInfo.avgRating || "N/A";
-          const reviews = professorInfo.ratings.edges.map(edge => edge.node.comment) || [];
-
-          console.log("DEBUG: Professor Data Extracted:", { name: professorName, rating, reviews, url });
-
-          professorData = { name: professorName, rating, reviews, url };
+          professorData = {
+            name: `${professorInfo.firstName} ${professorInfo.lastName}`,
+            rating: professorInfo.avgRating || "N/A",
+            reviews: professorInfo.ratings.edges.map(edge => edge.node.comment) || [],
+            url,
+          };
         }
       } catch (error) {
-        console.error("ERROR: RateMyProfessors API failed, switching to scraping...", error.response?.data || error);
+        console.error("ERROR: GraphQL API failed, switching to scraping...");
         professorData = await scrapeProfessorPage(url);
       }
     }
 
-    if (queryVector.length > 0) {
-      console.log("DEBUG: Searching Pinecone for query match...");
-      const queryResponse = await index.query({
-        vector: queryVector,
-        topK: 5,
-        includeMetadata: true,
+    if (professorData) {
+      console.log(`DEBUG: Generating embedding for professor: ${professorData.name}`);
+      const professorNameEmbedding = await openai.createEmbedding({
+        model: "text-embedding-ada-002",
+        input: professorData.name,
       });
 
-      const matchedProfessor = queryResponse.matches
-        .map(match => match.metadata)
-        .filter(prof => prof.name.toLowerCase() === query.toLowerCase());
+      if (professorNameEmbedding?.data?.data?.length > 0) {
+        const professorVector = professorNameEmbedding.data.data[0].embedding;
 
-      if (matchedProfessor.length === 0) {
-        return res.status(404).json({ error: "Professor not found." });
+        await index.upsert([
+          {
+            id: professorData.name.toLowerCase().replace(/\s+/g, "-"),
+            values: professorVector,
+            metadata: professorData,
+          },
+        ]);
+        console.log(`DEBUG: Successfully stored professor data in Pinecone.`);
+      } else {
+        return res.status(400).json({ error: "Failed to generate embedding for professor name" });
       }
-
-      professorData = matchedProfessor[0];
     }
+
+    console.log("DEBUG: Searching Pinecone for query match...");
+    const queryResponse = await index.query({
+      vector: queryVector,
+      topK: 5,
+      includeMetadata: true,
+    });
+
+    const matchedProfessor = queryResponse.matches
+      .map(match => match.metadata)
+      .filter(prof => prof.name.toLowerCase() === query.toLowerCase());
+
+    if (matchedProfessor.length === 0) {
+      return res.status(404).json({ error: "Professor not found." });
+    }
+
+    professorData = matchedProfessor[0];
 
     const prompt = `
       The user is looking for information about the professor. Here is the data we found: ${JSON.stringify(professorData)}.
-      Provide a summary and include the professor's Rate My Professors page URL directly in the response instead of saying "this link."
+      Provide a summary and include the professor's Rate My Professors page URL directly in the response.
     `;
 
     console.log("DEBUG: Sending prompt to OpenAI...");
@@ -164,7 +175,7 @@ export default async function handler(req, res) {
         { role: "system", content: "You are a helpful assistant." },
         { role: "user", content: prompt },
       ],
-      max_tokens: 250, // Increased to prevent cut-off
+      max_tokens: 250,
     });
 
     const summary = responseChat.data.choices[0].message.content.trim();
@@ -177,19 +188,14 @@ export default async function handler(req, res) {
   }
 }
 
-//If GraphQL API fails
 async function scrapeProfessorPage(url) {
   try {
     console.log("DEBUG: Scraping professor page:", url);
     const { data } = await axios.get(url, { headers: { "User-Agent": getRandomUserAgent() } });
     const $ = cheerio.load(data);
 
-    const firstName = $("h1.NameTitle__NameWrapper-dowf0z-2").first().text().trim();
-    const lastName = $("h1.NameTitle__NameWrapper-dowf0z-2 span:last-child").text().trim();
-    const professorName = `${firstName} ${lastName}`.trim();
-
-    const ratingText = $(".RatingValue__Numerator-qw8sqy-2").first().text().trim();
-    const rating = ratingText ? parseFloat(ratingText) : "N/A";
+    const professorName = $("h1.NameTitle__NameWrapper-dowf0z-2").text().trim();
+    const rating = parseFloat($(".RatingValue__Numerator-qw8sqy-2").text().trim()) || "N/A";
 
     const reviews = [];
     $("div.Comments__StyledComments-dzzyvm-0").each((index, element) => {
@@ -199,10 +205,9 @@ async function scrapeProfessorPage(url) {
       }
     });
 
-    console.log("DEBUG: Scraped Data:", { name: professorName, rating, reviews, url });
     return { name: professorName, rating, reviews, url };
   } catch (error) {
     console.error("ERROR: Failed to scrape professor page:", error);
-    return { error: "Failed to extract professor data" };
+    return null;
   }
 }
