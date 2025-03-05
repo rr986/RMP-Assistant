@@ -2,6 +2,7 @@ import axios from "axios";
 import * as cheerio from "cheerio";
 import { Pinecone } from "@pinecone-database/pinecone";
 import { Configuration, OpenAIApi } from "openai";
+import base64 from "base-64";
 
 const configuration = new Configuration({
   apiKey: process.env.OPENAI_API_KEY,
@@ -59,7 +60,7 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: "Invalid RateMyProfessors URL format" });
       }
 
-      const encodedProfessorId = Buffer.from(`Teacher-${professorId}`).toString("base64");
+      const encodedProfessorId = base64.encode(`Teacher-${professorId}`);
       console.log(`DEBUG: Extracted & Encoded Professor ID: ${encodedProfessorId}`);
 
       try {
@@ -78,15 +79,6 @@ export default async function handler(req, res) {
                       edges {
                         node {
                           comment
-                          date
-                          difficultyRating
-                          clarityRating
-                          helpfulRating
-                          class
-                          attendanceMandatory
-                          grade
-                          wouldTakeAgain
-                          ratingTags
                         }
                       }
                     }
@@ -101,19 +93,22 @@ export default async function handler(req, res) {
               "Content-Type": "application/json",
               "Referer": `https://www.ratemyprofessors.com/professor/${professorId}`,
               "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-              "Authorization": "Basic dGVzdDp0ZXN0", // ⬅️ Needed if authentication is required
+              "Authorization": "Basic dGVzdDp0ZXN0",
             },
           }
         );
 
+        console.log("DEBUG: Full API Response:", response.data);
+
         const professorInfo = response.data?.data?.node;
         if (!professorInfo) {
+          console.error(`ERROR: Professor ${professorId} not found on RMP`);
           return res.status(404).json({ error: "Professor not found on RateMyProfessors" });
         }
 
         const professorName = `${professorInfo.firstName} ${professorInfo.lastName}`;
         const rating = professorInfo.avgRating || "N/A";
-        const reviews = professorInfo.ratings.edges.map(edge => edge.node.comment) || [];
+        const reviews = professorInfo.ratings?.edges?.map(edge => edge.node.comment) || [];
 
         console.log("DEBUG: Professor Data Extracted:", {
           name: professorName,
@@ -150,7 +145,7 @@ export default async function handler(req, res) {
           return res.status(400).json({ error: "Failed to generate embedding for professor name" });
         }
       } catch (error) {
-        console.error("ERROR: RateMyProfessors GraphQL API request failed", error.response?.data || error);
+        console.error("ERROR: RateMyProfessors API request failed", error.response?.data || error);
         return res.status(500).json({ error: "RateMyProfessors API request failed" });
       }
     }
@@ -175,8 +170,15 @@ export default async function handler(req, res) {
     }
 
     const prompt = `
-      The user is looking for information about the professor. Here is the data we found: ${JSON.stringify(professorData)}.
-      Provide a summary and include the professor's Rate My Professors page URL directly in the response instead of saying "this link."
+      The user is looking for information about the professor. Here is the data we found:
+      Name: ${professorData.name}
+      Rating: ${professorData.rating}
+      Number of Reviews: ${professorData.reviews.length}
+
+      Provide a summary of the professor's ratings and teaching style.
+      At the END of your response, include this full sentence:
+
+      "For more details and student reviews, visit their Rate My Professors page: ${professorData.url}"
     `;
 
     console.log("DEBUG: Sending prompt to OpenAI...");
@@ -186,11 +188,12 @@ export default async function handler(req, res) {
         { role: "system", content: "You are a helpful assistant." },
         { role: "user", content: prompt },
       ],
-      max_tokens: 150,
+      max_tokens: 200,
     });
 
     const summary = responseChat.data.choices[0].message.content.trim();
     console.log("DEBUG: OpenAI Response:", summary);
+
 
     res.status(200).json({ result: summary, professorData });
   } catch (error) {
@@ -198,4 +201,3 @@ export default async function handler(req, res) {
     res.status(500).json({ error: "Failed to process request" });
   }
 }
-
