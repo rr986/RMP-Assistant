@@ -2,7 +2,6 @@ import axios from "axios";
 import * as cheerio from "cheerio";
 import { Pinecone } from "@pinecone-database/pinecone";
 import { Configuration, OpenAIApi } from "openai";
-import base64 from "base-64";
 
 const configuration = new Configuration({
   apiKey: process.env.OPENAI_API_KEY,
@@ -13,6 +12,15 @@ const pc = new Pinecone({
   apiKey: process.env.PINECONE_API_KEY,
 });
 const index = pc.index("rmpindex");
+
+function getRandomUserAgent() {
+  const userAgents = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+    "Mozilla/5.0 (Linux; Android 11; SM-G991B)",
+  ];
+  return userAgents[Math.floor(Math.random() * userAgents.length)];
+}
 
 export default async function handler(req, res) {
   if (req.method === "OPTIONS") {
@@ -60,7 +68,7 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: "Invalid RateMyProfessors URL format" });
       }
 
-      const encodedProfessorId = base64.encode(`Teacher-${professorId}`);
+      const encodedProfessorId = Buffer.from(`Teacher-${professorId}`).toString("base64");
       console.log(`DEBUG: Extracted & Encoded Professor ID: ${encodedProfessorId}`);
 
       try {
@@ -79,6 +87,15 @@ export default async function handler(req, res) {
                       edges {
                         node {
                           comment
+                          date
+                          difficultyRating
+                          clarityRating
+                          helpfulRating
+                          class
+                          attendanceMandatory
+                          grade
+                          wouldTakeAgain
+                          ratingTags
                         }
                       }
                     }
@@ -92,61 +109,27 @@ export default async function handler(req, res) {
             headers: {
               "Content-Type": "application/json",
               "Referer": `https://www.ratemyprofessors.com/professor/${professorId}`,
-              "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-              "Authorization": "Basic dGVzdDp0ZXN0",
+              "User-Agent": getRandomUserAgent(),
             },
           }
         );
 
-        console.log("DEBUG: Full API Response:", response.data);
-
         const professorInfo = response.data?.data?.node;
         if (!professorInfo) {
-          console.error(`ERROR: Professor ${professorId} not found on RMP`);
-          return res.status(404).json({ error: "Professor not found on RateMyProfessors" });
-        }
-
-        const professorName = `${professorInfo.firstName} ${professorInfo.lastName}`;
-        const rating = professorInfo.avgRating || "N/A";
-        const reviews = professorInfo.ratings?.edges?.map(edge => edge.node.comment) || [];
-
-        console.log("DEBUG: Professor Data Extracted:", {
-          name: professorName,
-          rating,
-          reviews,
-          url,
-        });
-
-        professorData = {
-          name: professorName,
-          rating,
-          reviews,
-          url,
-        };
-
-        console.log(`DEBUG: Generating embedding for professor: ${professorName}`);
-        const professorNameEmbedding = await openai.createEmbedding({
-          model: "text-embedding-ada-002",
-          input: professorName,
-        });
-
-        if (professorNameEmbedding?.data?.data?.length > 0) {
-          const professorVector = professorNameEmbedding.data.data[0].embedding;
-
-          await index.upsert([
-            {
-              id: professorName.toLowerCase().replace(/\s+/g, "-"),
-              values: professorVector,
-              metadata: professorData,
-            },
-          ]);
-          console.log(`DEBUG: Successfully stored professor data in Pinecone.`);
+          console.log("DEBUG: GraphQL API failed, switching to scraping...");
+          professorData = await scrapeProfessorPage(url);
         } else {
-          return res.status(400).json({ error: "Failed to generate embedding for professor name" });
+          const professorName = `${professorInfo.firstName} ${professorInfo.lastName}`;
+          const rating = professorInfo.avgRating || "N/A";
+          const reviews = professorInfo.ratings.edges.map(edge => edge.node.comment) || [];
+
+          console.log("DEBUG: Professor Data Extracted:", { name: professorName, rating, reviews, url });
+
+          professorData = { name: professorName, rating, reviews, url };
         }
       } catch (error) {
-        console.error("ERROR: RateMyProfessors API request failed", error.response?.data || error);
-        return res.status(500).json({ error: "RateMyProfessors API request failed" });
+        console.error("ERROR: RateMyProfessors API failed, switching to scraping...", error.response?.data || error);
+        professorData = await scrapeProfessorPage(url);
       }
     }
 
@@ -159,8 +142,8 @@ export default async function handler(req, res) {
       });
 
       const matchedProfessor = queryResponse.matches
-        .map((match) => match.metadata)
-        .filter((prof) => prof.name.toLowerCase() === query.toLowerCase());
+        .map(match => match.metadata)
+        .filter(prof => prof.name.toLowerCase() === query.toLowerCase());
 
       if (matchedProfessor.length === 0) {
         return res.status(404).json({ error: "Professor not found." });
@@ -170,15 +153,8 @@ export default async function handler(req, res) {
     }
 
     const prompt = `
-      The user is looking for information about the professor. Here is the data we found:
-      Name: ${professorData.name}
-      Rating: ${professorData.rating}
-      Number of Reviews: ${professorData.reviews.length}
-
-      Provide a summary of the professor's ratings and teaching style.
-      At the END of your response, include this full sentence:
-
-      "For more details and student reviews, visit their Rate My Professors page: ${professorData.url}"
+      The user is looking for information about the professor. Here is the data we found: ${JSON.stringify(professorData)}.
+      Provide a summary and include the professor's Rate My Professors page URL directly in the response instead of saying "this link."
     `;
 
     console.log("DEBUG: Sending prompt to OpenAI...");
@@ -188,16 +164,45 @@ export default async function handler(req, res) {
         { role: "system", content: "You are a helpful assistant." },
         { role: "user", content: prompt },
       ],
-      max_tokens: 200,
+      max_tokens: 250, // Increased to prevent cut-off
     });
 
     const summary = responseChat.data.choices[0].message.content.trim();
     console.log("DEBUG: OpenAI Response:", summary);
 
-
     res.status(200).json({ result: summary, professorData });
   } catch (error) {
     console.error("Error in server-side logic:", error);
     res.status(500).json({ error: "Failed to process request" });
+  }
+}
+
+//If GraphQL API fails
+async function scrapeProfessorPage(url) {
+  try {
+    console.log("DEBUG: Scraping professor page:", url);
+    const { data } = await axios.get(url, { headers: { "User-Agent": getRandomUserAgent() } });
+    const $ = cheerio.load(data);
+
+    const firstName = $("h1.NameTitle__NameWrapper-dowf0z-2").first().text().trim();
+    const lastName = $("h1.NameTitle__NameWrapper-dowf0z-2 span:last-child").text().trim();
+    const professorName = `${firstName} ${lastName}`.trim();
+
+    const ratingText = $(".RatingValue__Numerator-qw8sqy-2").first().text().trim();
+    const rating = ratingText ? parseFloat(ratingText) : "N/A";
+
+    const reviews = [];
+    $("div.Comments__StyledComments-dzzyvm-0").each((index, element) => {
+      const reviewText = $(element).text().trim();
+      if (reviewText) {
+        reviews.push(reviewText);
+      }
+    });
+
+    console.log("DEBUG: Scraped Data:", { name: professorName, rating, reviews, url });
+    return { name: professorName, rating, reviews, url };
+  } catch (error) {
+    console.error("ERROR: Failed to scrape professor page:", error);
+    return { error: "Failed to extract professor data" };
   }
 }
