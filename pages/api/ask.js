@@ -35,7 +35,7 @@ export default async function handler(req, res) {
     return res.status(405).end(`Method ${req.method} Not Allowed`);
   }
 
-  const { query, url } = req.body;
+  const { query, url, retry } = req.body; // `retry` added to avoid infinite loop
   if (!query && !url) {
     return res.status(400).json({ error: "Query or URL is required" });
   }
@@ -158,6 +158,12 @@ export default async function handler(req, res) {
       .filter(prof => prof.name.toLowerCase() === query.toLowerCase());
 
     if (matchedProfessor.length === 0) {
+      if (!retry) {
+        console.log("DEBUG: No match found, auto-submitting again...");
+        // Auto-resend request once if no results (acts like a second click)
+        const retryResponse = await axios.post("http://localhost:3000/api/ask", { query, url, retry: true });
+        return res.status(200).json(retryResponse.data);
+      }
       return res.status(200).json({ message: "Professor data stored but not queried yet.", professorData });
     }
 
